@@ -9,10 +9,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="AI Visual Search", layout="wide")
 
-# --- 2. DEFINE CUSTOM FUNCTIONS ---
-# This fixes the "Unknown layer: Lambda" error
-def l2_normalize(x):
-    return tf.nn.l2_normalize(x, axis=1)
+# --- 2. DEFINE CUSTOM FUNCTIONS (FIXED) ---
+# We now accept 'axis' because the saved model passes it automatically
+def l2_normalize(x, axis=1):
+    return tf.nn.l2_normalize(x, axis=axis)
 
 # --- 3. LOAD RESOURCES ---
 @st.cache_resource
@@ -29,7 +29,7 @@ def load_resources():
         mini_index_path = 'mini_index.pkl'
         df = None
         
-        # Check for Local Pro Mode (Full Index + Dataset folder)
+        # Check for Local Pro Mode
         if os.path.exists(full_index_path) and os.path.exists("dataset"):
             print("✅ Loading FULL Local Index (Pro Mode)...")
             df = pd.read_pickle(full_index_path)
@@ -42,7 +42,7 @@ def load_resources():
             mode = "LITE"
             
         else:
-            st.error("🚨 CRITICAL ERROR: No index file found! (Checked for 'search_index_v2.pkl' and 'mini_index.pkl')")
+            st.error("🚨 CRITICAL ERROR: No index file found!")
             return None, None, None
 
         return model, df, mode
@@ -56,23 +56,19 @@ def main():
     st.title("🍔🏎️ AI Similarity Search: Cars & Food")
     st.write("Upload an image to find similar items from our database.")
 
-    # Load everything
     model, df, mode = load_resources()
 
     if model is None or df is None:
         st.stop()
 
-    # Show Mode Badge
     if mode == "LITE":
-        st.warning("⚠️ **DEMO MODE ACTIVE:** Searching a curated subset of 25 popular classes. (Clone repo for full 297-class Pro Mode).")
+        st.warning("⚠️ **DEMO MODE:** Searching 25 popular classes. (Clone for full version).")
     else:
-        st.success("✅ **PRO MODE ACTIVE:** Searching full database (297 Classes).")
+        st.success("✅ **PRO MODE:** Searching 297 classes.")
 
-    # File Uploader
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
 
     if uploaded_file is not None:
-        # Display Query Image
         image = Image.open(uploaded_file).convert('RGB')
         
         col1, col2 = st.columns([1, 2])
@@ -83,48 +79,32 @@ def main():
             st.write("🔍 **Analyzing...**")
             
             try:
-                # --- SMART PREPROCESSING (Fixes Shape & Type Errors) ---
-                
-                # 1. Get Expected Input Shape from Model
-                # Usually (None, 224, 224, 3)
+                # --- SMART PREPROCESSING ---
+                # 1. Get Expected Input Shape
                 input_shape = model.input_shape
+                if isinstance(input_shape, list): input_shape = input_shape[0]
                 
-                # Handle generic lists
-                if isinstance(input_shape, list):
-                    input_shape = input_shape[0]
-                
-                # Default to 224 if model doesn't specify
                 target_h = input_shape[1] if input_shape[1] is not None else 224
                 target_w = input_shape[2] if input_shape[2] is not None else 224
                 
-                # 2. Resize Image
+                # 2. Resize & Normalize
                 img_resized = image.resize((target_w, target_h))
-                
-                # 3. Convert to Array and Normalize
                 img_array = np.array(img_resized) / 255.0
-                
-                # 4. FORCE FLOAT32 (Crucial for Keras 3 / TensorFlow)
                 img_array = img_array.astype(np.float32)
-                
-                # 5. Add Batch Dimension (1, H, W, 3)
                 img_array = np.expand_dims(img_array, axis=0)
                 
-                # --- PREDICTION & SEARCH ---
-                
-                # Get Embedding
+                # 3. Predict
                 query_embedding = model.predict(img_array)
                 
-                # Search (Cosine Similarity)
+                # 4. Search
                 database_embeddings = np.stack(df['embedding'].values)
                 similarities = cosine_similarity(query_embedding, database_embeddings)
                 
-                # Get Top 5 Results
                 top_k = 5
                 top_indices = np.argsort(similarities[0])[::-1][:top_k]
                 
                 st.write(f"✅ Found {top_k} matches:")
 
-                # Display Results
                 st.divider()
                 cols = st.columns(5)
                 
@@ -135,23 +115,18 @@ def main():
                     score = similarities[0][idx]
                     
                     with cols[i]:
-                        # IMAGE LOADING LOGIC
+                        # Path correction for Cloud vs Local
                         display_path = match_path
-                        
-                        # Fix path for Cloud Demo Mode
                         if mode == "LITE":
-                            filename = os.path.basename(match_path)
-                            display_path = os.path.join("app_images", filename)
+                            display_path = os.path.join("app_images", os.path.basename(match_path))
                         
-                        # Display
                         if os.path.exists(display_path):
                             st.image(display_path, caption=f"{label}\n({score:.2f})")
                         else:
-                            st.error(f"Image missing: {label}")
+                            st.error(f"Missing: {label}")
 
             except Exception as e:
                 st.error(f"Prediction Error: {e}")
-                st.write(f"Debug: Model expects shape {model.input_shape}")
 
 if __name__ == "__main__":
     main()
