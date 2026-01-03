@@ -10,11 +10,19 @@ from sklearn.metrics.pairwise import cosine_similarity
 st.set_page_config(page_title="AI Visual Search", layout="wide")
 
 # --- 2. DEFINE CUSTOM FUNCTIONS ---
-# Fixes the 'axis' error
 def l2_normalize(x, axis=1):
     return tf.nn.l2_normalize(x, axis=axis)
 
-# --- 3. LOAD RESOURCES ---
+# --- 3. HELPER: ROBUST FILENAME EXTRACTOR ---
+# This fixes the Windows path issue on Linux Cloud
+def get_clean_filename(path):
+    # If path contains Windows backslashes, split by them and take the last part
+    if "\\" in path:
+        return path.split("\\")[-1]
+    # Otherwise use standard OS separator
+    return os.path.basename(path)
+
+# --- 4. LOAD RESOURCES ---
 @st.cache_resource
 def load_resources():
     try:
@@ -48,7 +56,7 @@ def load_resources():
         st.error(f"Error loading resources: {e}")
         return None, None, None
 
-# --- 4. MAIN APPLICATION ---
+# --- 5. MAIN APPLICATION ---
 def main():
     st.title("🍔🏎️ AI Similarity Search: Cars & Food")
     
@@ -59,23 +67,30 @@ def main():
 
     # --- MODE INFO BOX ---
     if mode == "LITE":
-        # Smartly get the list of classes actually in the index
         available_classes = sorted(df['label'].unique())
         class_list_str = ", ".join(available_classes)
-        
         st.warning(
             f"""
             ⚠️ **DEMO MODE ACTIVE**
-            
-            Searching a curated subset of **{len(available_classes)} Popular Classes** due to cloud hosting limits.
-            
-            **Available Classes:** {class_list_str}
-            
-            *(To search all 297 classes, please clone the repo and run locally).*
+            Searching a curated subset of **{len(available_classes)} Popular Classes**.
+            **Classes:** {class_list_str}
             """
         )
     else:
         st.success(f"✅ **PRO MODE ACTIVE:** Searching full database ({len(df['label'].unique())} Classes).")
+
+    # --- DEBUGGING TOOL (Sidebar) ---
+    with st.sidebar:
+        st.header("🔧 Debug Tools")
+        show_debug = st.checkbox("Show Debug Info")
+        if show_debug and mode == "LITE":
+            st.write("Checking 'app_images' folder...")
+            if os.path.exists("app_images"):
+                files = os.listdir("app_images")
+                st.write(f"Found {len(files)} files in 'app_images'.")
+                st.write("First 5 files:", files[:5])
+            else:
+                st.error("🚨 'app_images' folder NOT FOUND!")
 
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
 
@@ -110,7 +125,6 @@ def main():
                 top_indices = np.argsort(similarities[0])[::-1][:top_k]
                 
                 st.write(f"✅ Found {top_k} matches:")
-
                 st.divider()
                 cols = st.columns(5)
                 
@@ -121,28 +135,24 @@ def main():
                     score = similarities[0][idx]
                     
                     with cols[i]:
-                        # --- ROBUST PATH LOGIC ---
+                        # --- ROBUST PATH FIX ---
                         display_path = old_path
                         
                         if mode == "LITE":
-                            # Force look inside app_images
-                            filename = os.path.basename(old_path)
-                            display_path = os.path.join("app_images", filename)
-                        
-                        # Debug check
+                            # Use the robust cleaner to handle Windows paths on Linux
+                            clean_filename = get_clean_filename(old_path)
+                            display_path = os.path.join("app_images", clean_filename)
+                            
+                            # Debug text if requested
+                            if show_debug:
+                                st.caption(f"Looking for: {display_path}")
+
                         if os.path.exists(display_path):
                             st.image(display_path, caption=f"{label}\n({score:.2f})")
                         else:
-                            # If exact match fails, try looking for just the filename in app_images directory
-                            # This catches issues where folder separators might be different (\ vs /)
-                            if mode == "LITE":
-                                fallback_path = f"app_images/{filename}"
-                                if os.path.exists(fallback_path):
-                                    st.image(fallback_path, caption=f"{label}\n({score:.2f})")
-                                else:
-                                    st.error(f"Image Missing")
-                            else:
-                                st.error(f"Image Missing")
+                            st.error("Image Missing")
+                            if show_debug:
+                                st.caption(f"Original Path: {old_path}")
 
             except Exception as e:
                 st.error(f"Prediction Error: {e}")
