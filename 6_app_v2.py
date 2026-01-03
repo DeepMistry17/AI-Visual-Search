@@ -1,151 +1,132 @@
 import streamlit as st
 import tensorflow as tf
-import numpy as np
 import pandas as pd
+import numpy as np
+import os
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
-import os
 
-# --- Configuration ---
-MODEL_PATH = "embedding_model_v2.keras"
-INDEX_PATH = "search_index_v2.pkl"
-IMG_SHAPE = (128, 128)
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="AI Visual Search", layout="wide")
 
-# --- 1. Load Resources (Cached) ---
+# --- 2. DEFINE CUSTOM FUNCTIONS (Fixes the Deserialization Error) ---
+# We must define this function exactly as it was used during training
+def l2_normalize(x):
+    return tf.nn.l2_normalize(x, axis=1)
+
+# --- 3. LOAD RESOURCES ---
 @st.cache_resource
 def load_resources():
     try:
-        # --- 1. Load Model ---
-        # The model is always present
-        model = tf.keras.models.load_model('embedding_model_v2.keras')
+        # A. Load Model (With Custom Object)
+        # We pass 'l2_normalize' so Keras knows how to handle the Lambda layer
+        model = tf.keras.models.load_model(
+            'embedding_model_v2.keras', 
+            custom_objects={'l2_normalize': l2_normalize}
+        )
         
-        # --- 2. Determine Which Index to Load ---
-        # Logic: If we are on the Cloud, 'dataset' folder won't exist -> Use Mini Index
-        #        If we are on Local (Pro Mode), 'dataset' folder exists -> Use Full Index
-        
+        # B. Load Index (Dual-Mode Logic)
         full_index_path = 'search_index_v2.pkl'
         mini_index_path = 'mini_index.pkl'
-        
         df = None
         
-        # CHECK: Does the Full Index exist?
+        # Check for Local Pro Mode (Full Index + Dataset folder)
         if os.path.exists(full_index_path) and os.path.exists("dataset"):
             print("✅ Loading FULL Local Index (Pro Mode)...")
             df = pd.read_pickle(full_index_path)
+            mode = "PRO"
             
-        # CHECK: If not, does the Mini Index exist?
+        # Check for Cloud Demo Mode
         elif os.path.exists(mini_index_path):
             print("☁️ Loading LITE Cloud Index (Demo Mode)...")
             df = pd.read_pickle(mini_index_path)
+            mode = "LITE"
             
         else:
-            # If neither exists, we have a problem
             st.error("🚨 CRITICAL ERROR: No index file found! (Checked for 'search_index_v2.pkl' and 'mini_index.pkl')")
-            return None, None
+            return None, None, None
 
-        return model, df
+        return model, df, mode
         
     except Exception as e:
         st.error(f"Error loading resources: {e}")
-        return None, None
+        return None, None, None
 
-# --- 2. Helper Functions ---
-def preprocess_image(image_file):
-    """
-    Resize and normalize user image for MobileNetV2
-    """
-    img = Image.open(image_file).convert('RGB') # Force 3-channel color
-    img = img.resize(IMG_SHAPE)
-    img_array = np.array(img, dtype='float32') / 255.0
-    img_array = np.expand_dims(img_array, axis=0) # Add batch dimension (1, 128, 128, 3)
-    return img_array
+# --- 4. MAIN APPLICATION ---
+def main():
+    st.title("🍔🏎️ AI Similarity Search: Cars & Food")
+    st.write("Upload an image to find similar items from our database.")
 
-def find_similar(query_vec, all_vecs, df, top_n=20):
-    """
-    Math magic: Cosine Similarity
-    """
-    similarities = cosine_similarity(query_vec, all_vecs).flatten()
-    
-    # Get top N indices
-    # We use argsort to get indices of sorted values, then flip [::-1] for descending
-    top_indices = np.argsort(similarities)[::-1][:top_n]
-    
-    # Get the actual rows
-    results = df.iloc[top_indices].copy()
-    results['score'] = similarities[top_indices]
-    return results
+    # Load everything (Now returns 3 values to fix the unpacking error)
+    model, df, mode = load_resources()
 
-# --- 3. The App UI ---
-st.set_page_config(page_title="Deep Search V2", layout="wide")
+    if model is None or df is None:
+        st.stop()
 
-st.title("🍔🏎️ AI Similarity Search: Cars & Food")
-st.markdown("Powered by **MobileNetV2** | Trained on **Stanford Cars & Food-101**")
+    # Show Mode Badge
+    if mode == "LITE":
+        st.warning("⚠️ **DEMO MODE ACTIVE:** Searching a curated subset of 25 popular classes. (Clone repo for full 297-class Pro Mode).")
+    else:
+        st.success("✅ **PRO MODE ACTIVE:** Searching full database (297 Classes).")
 
-# Load data
-try:
-    model, df, all_embeddings = load_resources()
-except Exception as e:
-    st.error(f"Error loading resources: {e}")
-    st.stop()
-
-# Sidebar for controls
-with st.sidebar:
-    st.header("Upload Image")
+    # File Uploader
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-    
-    st.divider()
-    
-    st.header("Filters")
-    # Get all unique classes for the dropdown
-    all_classes = sorted(df['label'].unique())
-    
-    # Multi-select dropdown
-    selected_classes = st.multiselect(
-        "Filter results by category:",
-        all_classes,
-        placeholder="Select categories (optional)"
-    )
 
-# Main Area
-if uploaded_file:
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.subheader("Your Query")
-        st.image(uploaded_file, width=250, caption="Query Image")
+    if uploaded_file is not None:
+        # Display Query Image
+        image = Image.open(uploaded_file).convert('RGB')
         
-        # Process and Predict
-        query_img = preprocess_image(uploaded_file)
-        query_emb = model.predict(query_img, verbose=0)
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.image(image, caption='Query Image', use_container_width=True)
         
-        # Search
-        results = find_similar(query_emb, all_embeddings, df, top_n=50)
-        
-        # Apply Filters
-        if selected_classes:
-            results = results[results['label'].isin(selected_classes)]
+        with col2:
+            st.write("🔍 **Analyzing...**")
             
-    with col2:
-        st.subheader("Recommended Results")
+            # Preprocess
+            img_array = np.array(image.resize((224, 224))) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            
+            # Get Embedding
+            query_embedding = model.predict(img_array)
+            
+            # Search (Cosine Similarity)
+            database_embeddings = np.stack(df['embedding'].values)
+            similarities = cosine_similarity(query_embedding, database_embeddings)
+            
+            # Get Top 5 Results
+            top_k = 5
+            top_indices = np.argsort(similarities[0])[::-1][:top_k]
+            
+            st.write(f"✅ Found {top_k} matches:")
+
+        # Display Results
+        st.divider()
+        cols = st.columns(5)
         
-        if results.empty:
-            st.warning("No results found. Try removing filters.")
-        else:
-            # Display Grid
-            # We show top 9 results in a 3x3 grid
-            top_results = results.head(9)
+        for i, idx in enumerate(top_indices):
+            row = df.iloc[idx]
+            match_path = row['filepath']
+            label = row['label']
+            score = similarities[0][idx]
             
-            # Create 3 columns for the grid
-            grid_cols = st.columns(3)
-            
-            for i, (index, row) in enumerate(top_results.iterrows()):
-                col = grid_cols[i % 3] # Cycle through columns 0, 1, 2
+            with cols[i]:
+                # IMAGE LOADING LOGIC
+                # In Demo Mode, images are in 'app_images/' folder
+                # In Pro Mode, images are in 'dataset/...' structure
                 
-                with col:
-                    # Display Image
-                    # Streamlit can read directly from the filepath we saved!
-                    st.image(row['filepath'], use_container_width=True)
-                    st.caption(f"**{row['label']}**\nMatch: {row['score']:.2f}")
+                display_path = match_path
+                
+                # If Demo Mode, fix the path to point to 'app_images'
+                if mode == "LITE":
+                    filename = os.path.basename(match_path)
+                    display_path = os.path.join("app_images", filename)
+                
+                # Try to display
+                if os.path.exists(display_path):
+                    st.image(display_path, caption=f"{label}\n({score:.2f})")
+                else:
+                    st.error(f"Image not found: {display_path}")
 
-else:
-    st.info("👈 Upload an image of a car or food to start searching!")
+if __name__ == "__main__":
+    main()
