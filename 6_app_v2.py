@@ -14,20 +14,40 @@ IMG_SHAPE = (128, 128)
 # --- 1. Load Resources (Cached) ---
 @st.cache_resource
 def load_resources():
-    print("Loading model and index...")
-    
-    # Load Model (with custom L2 layer)
-    custom_objects = {'l2_normalize': tf.math.l2_normalize}
-    model = tf.keras.models.load_model(MODEL_PATH, safe_mode=False, custom_objects=custom_objects)
-    
-    # Load Index
-    df = pd.read_pickle(INDEX_PATH)
-    
-    # Extract embeddings as a clean numpy matrix
-    all_embeddings = np.array(df["embedding"].tolist())
-    
-    print("Resources loaded.")
-    return model, df, all_embeddings
+    try:
+        # --- 1. Load Model ---
+        # The model is always present
+        model = tf.keras.models.load_model('embedding_model_v2.keras')
+        
+        # --- 2. Determine Which Index to Load ---
+        # Logic: If we are on the Cloud, 'dataset' folder won't exist -> Use Mini Index
+        #        If we are on Local (Pro Mode), 'dataset' folder exists -> Use Full Index
+        
+        full_index_path = 'search_index_v2.pkl'
+        mini_index_path = 'mini_index.pkl'
+        
+        df = None
+        
+        # CHECK: Does the Full Index exist?
+        if os.path.exists(full_index_path) and os.path.exists("dataset"):
+            print("✅ Loading FULL Local Index (Pro Mode)...")
+            df = pd.read_pickle(full_index_path)
+            
+        # CHECK: If not, does the Mini Index exist?
+        elif os.path.exists(mini_index_path):
+            print("☁️ Loading LITE Cloud Index (Demo Mode)...")
+            df = pd.read_pickle(mini_index_path)
+            
+        else:
+            # If neither exists, we have a problem
+            st.error("🚨 CRITICAL ERROR: No index file found! (Checked for 'search_index_v2.pkl' and 'mini_index.pkl')")
+            return None, None
+
+        return model, df
+        
+    except Exception as e:
+        st.error(f"Error loading resources: {e}")
+        return None, None
 
 # --- 2. Helper Functions ---
 def preprocess_image(image_file):
